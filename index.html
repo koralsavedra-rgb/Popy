@@ -2324,8 +2324,10 @@ function lerTextoPacote(valor,rotulo,max,obrigatorio){
   if(v.length>max)return {erro:rotulo.charAt(0).toUpperCase()+rotulo.slice(1)+' passou do limite de '+max+' caracteres (tem '+v.length+').'};
   return {v};
 }
-/* Lista de itens: cada item é um texto ou um objeto {nome, descricao}. */
-function lerItensPacote(lista,chave,maxItens,maxNome){
+/* Lista de itens: cada item é um texto ou um objeto {nome, descricao, ...campos extras}.
+   extras: [['campo', limite], ...] (textos opcionais). aninhado: lê também "registros" dentro de cada item. */
+function lerItensPacote(lista,chave,maxItens,maxNome,extras,aninhado,camposDaCategoria){
+  extras=extras||[];
   if(lista===undefined)return {itens:[]};
   if(!Array.isArray(lista))return {erro:'"'+chave+'" precisa ser uma lista, entre colchetes [ ].'};
   if(lista.length>maxItens)return {erro:'"'+chave+'" tem '+lista.length+' itens; o limite é '+maxItens+'.'};
@@ -2335,9 +2337,69 @@ function lerItensPacote(lista,chave,maxItens,maxNome){
     const bruto=typeof lista[i]==='string'?{nome:lista[i]}:lista[i];
     if(!bruto||typeof bruto!=='object'||Array.isArray(bruto))return {erro:pos+' precisa ser um texto ou um objeto com "nome".'};
     const n=lerTextoPacote(bruto.nome,'o "nome"',maxNome,true);if(n.erro)return {erro:pos+': '+n.erro};
-    const d=lerTextoPacote(bruto.descricao,'a "descricao"',300,false);if(d.erro)return {erro:pos+' ("'+n.v+'"): '+d.erro};
+    const d=lerTextoPacote(bruto.descricao,'a "descricao"',600,false);if(d.erro)return {erro:pos+' ("'+n.v+'"): '+d.erro};
+    const item={nome:n.v,descricao:d.v};
+    for(const [campo,limite] of extras){const t=lerTextoPacote(bruto[campo],'o campo "'+campo+'"',limite,false);if(t.erro)return {erro:pos+' ("'+n.v+'"): '+t.erro};item[campo]=t.v;}
+    if(aninhado){
+      const cs=lerCamposCategoria(bruto.campos,n.v);if(cs.erro)return cs;item.campos=cs.campos;
+      const r=lerItensPacote(bruto.registros,'registros de "'+n.v+'"',100,80,[],false,item.campos);if(r.erro)return r;item.registros=r.itens;
+    }
+    if(camposDaCategoria){                                   // registro de categoria: valores dos campos personalizados
+      const v=lerValoresRegistro(bruto.valores,camposDaCategoria);if(v.erro)return {erro:pos+' ("'+n.v+'"): '+v.erro};item.valores=v.valores;
+    }
     if(vistos.has(norm(n.v)))return {erro:pos+' ("'+n.v+'") repete um item anterior.'};
-    vistos.add(norm(n.v));itens.push({nome:n.v,descricao:d.v});
+    vistos.add(norm(n.v));itens.push(item);
+  }
+  return {itens};
+}
+/* Campos personalizados de uma categoria: lista de nomes (textos de até 50 caracteres). */
+function lerCamposCategoria(lista,categoria){
+  if(lista===undefined)return {campos:[]};
+  if(!Array.isArray(lista))return {erro:'Em "categorias", "campos" de "'+categoria+'" precisa ser uma lista de textos, entre colchetes [ ].'};
+  if(lista.length>12)return {erro:'A categoria "'+categoria+'" tem '+lista.length+' campos; o limite é 12.'};
+  const campos=[],vistos=new Set();
+  for(let i=0;i<lista.length;i++){
+    const t=lerTextoPacote(lista[i],'o campo nº '+(i+1)+' da categoria "'+categoria+'"',50,true);if(t.erro)return {erro:t.erro};
+    if(vistos.has(norm(t.v)))return {erro:'A categoria "'+categoria+'" repete o campo "'+t.v+'".'};
+    vistos.add(norm(t.v));campos.push(t.v);
+  }
+  return {campos};
+}
+/* Valores de um registro de categoria: objeto {"Nome do campo": "texto"}; os nomes precisam existir nos campos da categoria. */
+function lerValoresRegistro(valores,campos){
+  if(valores===undefined)return {valores:{}};
+  if(!valores||typeof valores!=='object'||Array.isArray(valores))return {erro:'"valores" precisa ser um objeto, como {"Campo": "texto"}.'};
+  const saida={};
+  for(const [nome,bruto] of Object.entries(valores)){
+    const campo=campos.find(c=>norm(c)===norm(nome));
+    if(!campo)return {erro:'o campo "'+nome.slice(0,50)+'" em "valores" não existe na lista "campos" da categoria'+(campos.length?' ('+campos.join(', ')+')':', que não tem campos')+'.'};
+    const t=lerTextoPacote(bruto,'o valor de "'+campo+'"',300,false);if(t.erro)return {erro:t.erro};
+    if(t.v)saida[campo]=t.v;
+  }
+  return {valores:saida};
+}
+/* Relações entre registros do pacote: {de, para, tipo, descricao}. "de" e "para" são nomes de registros do próprio pacote. */
+function lerRelacoesPacote(lista,nomes){
+  if(lista===undefined)return {itens:[]};
+  if(!Array.isArray(lista))return {erro:'"relacoes" precisa ser uma lista, entre colchetes [ ].'};
+  if(lista.length>300)return {erro:'"relacoes" tem '+lista.length+' itens; o limite é 300.'};
+  const itens=[],vistos=new Set();
+  for(let i=0;i<lista.length;i++){
+    const r=lista[i],pos='Em "relacoes", o item nº '+(i+1);
+    if(!r||typeof r!=='object'||Array.isArray(r))return {erro:pos+' precisa ser um objeto com "de", "para" e "tipo".'};
+    const de=lerTextoPacote(r.de,'o campo "de"',80,true);if(de.erro)return {erro:pos+': '+de.erro};
+    const para=lerTextoPacote(r.para,'o campo "para"',80,true);if(para.erro)return {erro:pos+': '+para.erro};
+    const tipo=lerTextoPacote(r.tipo,'o campo "tipo"',60,true);if(tipo.erro)return {erro:pos+': '+tipo.erro};
+    const desc=lerTextoPacote(r.descricao,'a "descricao"',400,false);if(desc.erro)return {erro:pos+': '+desc.erro};
+    for(const [campo,nome] of [['de',de.v],['para',para.v]]){
+      const qtd=nomes.get(norm(nome))||0;
+      if(!qtd)return {erro:pos+': o nome "'+nome+'" (em "'+campo+'") não existe entre os personagens, locais, acontecimentos ou registros de categorias do pacote.'};
+      if(qtd>1)return {erro:pos+': o nome "'+nome+'" aparece em mais de um registro do pacote. Use nomes diferentes para poder criar a relação.'};
+    }
+    if(norm(de.v)===norm(para.v))return {erro:pos+': "de" e "para" são o mesmo registro ("'+de.v+'").'};
+    const chave=norm(de.v)+'|'+norm(para.v)+'|'+norm(tipo.v);
+    if(vistos.has(chave))return {erro:pos+' repete uma relação já listada ("'+de.v+'" → "'+para.v+'", '+tipo.v+').'};
+    vistos.add(chave);itens.push({de:de.v,para:para.v,tipo:tipo.v,descricao:desc.v});
   }
   return {itens};
 }
@@ -2378,15 +2440,18 @@ function validarObjetoPacote(obj){
     }
     return {pacote};
   }
-  const cat=lerItensPacote(obj.categorias,'categorias',30,50);if(cat.erro)return erro(cat.erro);
+  const cat=lerItensPacote(obj.categorias,'categorias',30,50,[],true);if(cat.erro)return erro(cat.erro);
   for(const c of cat.itens){if(AREAS_FIXAS_UNIVERSO.some(n=>norm(n)===norm(c.nome)))return erro('A categoria "'+c.nome+'" tem o mesmo nome de uma área que o Universo já tem ('+AREAS_FIXAS_UNIVERSO.join(', ')+'). Escolha outro nome.');}
   const top=lerItensPacote(obj.topicosInformacoesGerais,'topicosInformacoesGerais',30,80);if(top.erro)return erro(top.erro);
   for(const t of top.itens){if(TOPICOS_INFO_GERAIS.some(x=>norm(x.titulo)===norm(t.nome)))return erro('O tópico "'+t.nome+'" já existe em Informações gerais. Escolha outro nome.');}
-  const pers=lerItensPacote(obj.personagens,'personagens',200,80);if(pers.erro)return erro(pers.erro);
-  const locais=lerItensPacote(obj.locais,'locais',200,80);if(locais.erro)return erro(locais.erro);
-  const acont=lerItensPacote(obj.acontecimentos,'acontecimentos',200,80);if(acont.erro)return erro(acont.erro);
+  const pers=lerItensPacote(obj.personagens,'personagens',200,80,[['funcao',80],['idade',40],['origem',160]]);if(pers.erro)return erro(pers.erro);
+  const locais=lerItensPacote(obj.locais,'locais',200,80,[['tipo',80],['regiao',160]]);if(locais.erro)return erro(locais.erro);
+  const acont=lerItensPacote(obj.acontecimentos,'acontecimentos',200,80,[['data',80],['local',160]]);if(acont.erro)return erro(acont.erro);
+  const nomes=new Map();
+  [...pers.itens,...locais.itens,...acont.itens,...cat.itens.flatMap(c=>c.registros)].forEach(x=>nomes.set(norm(x.nome),(nomes.get(norm(x.nome))||0)+1));
+  const rel=lerRelacoesPacote(obj.relacoes,nomes);if(rel.erro)return erro(rel.erro);
   if(!cat.itens.length&&!top.itens.length&&!pers.itens.length&&!locais.itens.length&&!acont.itens.length)return erro('Um pacote de universo precisa trazer pelo menos uma destas listas com itens: categorias, topicosInformacoesGerais, personagens, locais ou acontecimentos.');
-  Object.assign(pacote,{categorias:cat.itens,topicosInformacoesGerais:top.itens,personagens:pers.itens,locais:locais.itens,acontecimentos:acont.itens});
+  Object.assign(pacote,{categorias:cat.itens,topicosInformacoesGerais:top.itens,personagens:pers.itens,locais:locais.itens,acontecimentos:acont.itens,relacoes:rel.itens});
   return {pacote};
 }
 function validarPacotePopy(texto){
@@ -2398,10 +2463,16 @@ function validarPacotePopy(texto){
 function resumoPacote(pc){
   if(pc.tipo==='universo'){
     const l=[],nomes=a=>(a||[]).map(x=>x.nome).join(', ');
-    if((pc.categorias||[]).length)l.push('Categorias: '+nomes(pc.categorias));
+    const cats=pc.categorias||[],nReg=cats.reduce((t,c)=>t+(c.registros||[]).length,0);
+    const nCampos=cats.reduce((t,c)=>t+(c.campos||[]).length,0);
+    if(cats.length)l.push('Categorias: '+nomes(cats)+(nReg?' ('+plural(nReg,'registro','registros')+' dentro delas':'')+(nReg&&nCampos?', '+plural(nCampos,'campo personalizado','campos personalizados'):(nCampos?' ('+plural(nCampos,'campo personalizado','campos personalizados'):''))+(nReg||nCampos?')':''));
     if((pc.topicosInformacoesGerais||[]).length)l.push('Tópicos em Informações gerais: '+nomes(pc.topicosInformacoesGerais));
     const ini=[[(pc.personagens||[]).length,'personagem','personagens'],[(pc.locais||[]).length,'local','locais'],[(pc.acontecimentos||[]).length,'acontecimento','acontecimentos']].filter(x=>x[0]).map(x=>plural(x[0],x[1],x[2]));
-    if(ini.length)l.push('Para começar: '+ini.join(', ')+' (só os nomes)');
+    if(ini.length){
+      const temFicha=(pc.personagens||[]).some(p=>p.funcao||p.origem||p.idade||p.descricao);
+      l.push('Já cadastrados: '+ini.join(', ')+(temFicha?', com ficha preenchida':' (só os nomes)'));
+    }
+    if((pc.relacoes||[]).length)l.push('Relações entre registros: '+(pc.relacoes||[]).length);
     return l;
   }
   return (pc.areas||[]).map(a=>a.nome+' — '+PACOTE_TIPOS_AREA[a.tipo]);
@@ -2459,11 +2530,21 @@ function aplicarPacoteNaPesquisa(pesquisa){
 function aplicarPacoteAoUniverso(u,pc){
   if(!pc||pc.tipo!=='universo')return;
   const sufixo=()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,7);
-  u.customAreas=(pc.categorias||[]).map(c=>({id:'cat-'+sufixo(),nome:c.nome,descricao:c.descricao,campos:[],registros:[]}));
-  u.topicosInfoGerais=(pc.topicosInformacoesGerais||[]).map(t=>({id:'ig-'+sufixo(),titulo:t.nome,conteudo:t.descricao}));
-  u.personagens=(pc.personagens||[]).map(p=>({id:'p-'+sufixo(),nome:p.nome,foto:'',apresentacao:p.descricao,idade:'',funcao:'',origem:''}));
-  u.locais=(pc.locais||[]).map(x=>({id:'r-'+sufixo(),nome:x.nome,imagem:'',descricao:x.descricao,tipo:'',regiao:''}));
-  u.acontecimentos=(pc.acontecimentos||[]).map(x=>({id:'r-'+sufixo(),nome:x.nome,imagem:'',descricao:x.descricao,data:'',local:''}));
+  const idsPorNome=new Map();     // nome -> id do registro criado (para ligar as relações)
+  const guardar=(nome,id)=>idsPorNome.set(norm(nome),id);
+  u.customAreas=(pc.categorias||[]).map(c=>{
+    const campos=(c.campos||[]).map(nome=>({id:'campo-'+sufixo(),nome:nome.slice(0,50)})),idDoCampo=new Map(campos.map(x=>[norm(x.nome),x.id]));
+    return {id:'cat-'+sufixo(),nome:c.nome,descricao:c.descricao||'',campos,
+      registros:(c.registros||[]).map(r=>{
+        const id='reg-'+sufixo();guardar(r.nome,id);const valores={};
+        Object.entries(r.valores||{}).forEach(([campo,texto])=>{const cid=idDoCampo.get(norm(campo));if(cid)valores[cid]=texto;});
+        return {id,titulo:r.nome,conteudo:r.descricao||'',imagem:'',valores};})};
+  });
+  u.topicosInfoGerais=(pc.topicosInformacoesGerais||[]).map(t=>({id:'ig-'+sufixo(),titulo:t.nome,conteudo:t.descricao||''}));
+  u.personagens=(pc.personagens||[]).map(p=>{const id='p-'+sufixo();guardar(p.nome,id);return {id,nome:p.nome,foto:'',apresentacao:p.descricao||'',idade:p.idade||'',funcao:p.funcao||'',origem:p.origem||''};});
+  u.locais=(pc.locais||[]).map(x=>{const id='r-'+sufixo();guardar(x.nome,id);return {id,nome:x.nome,imagem:'',descricao:x.descricao||'',tipo:x.tipo||'',regiao:x.regiao||''};});
+  u.acontecimentos=(pc.acontecimentos||[]).map(x=>{const id='r-'+sufixo();guardar(x.nome,id);return {id,nome:x.nome,imagem:'',descricao:x.descricao||'',data:x.data||'',local:x.local||''};});
+  u.relacoes=(pc.relacoes||[]).map(r=>({id:'rel-'+sufixo(),origemId:idsPorNome.get(norm(r.de)),destinoId:idsPorNome.get(norm(r.para)),tipo:r.tipo,descricao:r.descricao||''})).filter(r=>r.origemId&&r.destinoId);
 }
 function renderPacotesNovaCriacao(){
   const lista=$('listaPacotesNovaCriacao');if(!lista)return;
@@ -2483,13 +2564,174 @@ function renderPacotesNovaCriacao(){
 /* ---------- Pacotes de exemplo (o Popy já traz; você adiciona com um toque) ---------- */
 const PACOTES_EXEMPLO=[
   {app:PACOTE_APP,versao:1,id:'teen-wolf-universo',tipo:'universo',nome:'Teen Wolf',
-   descricao:'Estrutura pronta para organizar o universo de Teen Wolf: categorias para o sobrenatural, tópicos de regras e uma lista inicial de personagens, locais e acontecimentos.',
-   comoUsar:'A lista é só um ponto de partida, escrita de memória: confira os nomes, complete o que faltar e remova o que não quiser. As fichas e as relações você preenche dentro do Popy.',
-   categorias:['Criaturas sobrenaturais','Bandos e alcateias','Caçadores','Símbolos e magia','Temporadas e episódios'],
-   topicosInformacoesGerais:['Regras do sobrenatural','Tradições e códigos'],
-   personagens:['Scott McCall','Stiles Stilinski','Lydia Martin','Allison Argent','Derek Hale','Isaac Lahey','Jackson Whittemore','Peter Hale','Kate Argent','Chris Argent','Melissa McCall','Noah Stilinski','Alan Deaton','Malia Tate','Kira Yukimura','Liam Dunbar','Theo Raeken','Cora Hale','Erica Reyes','Vernon Boyd','Jordan Parrish','Mason Hewitt','Talia Hale','Laura Hale','Gerard Argent','Braeden'],
-   locais:['Beacon Hills','Casa dos Hale','Nemeton','Colégio de Beacon Hills','Casa dos McCall','Casa dos Stilinski','Clínica veterinária de Deaton','Hospital de Beacon Hills','Eichen House','Delegacia de Beacon Hills'],
-   acontecimentos:['Incêndio na casa dos Hale','Scott é mordido','Chegada do Bando de Alfas','Possessão de Stiles pelo Nogitsune','A Caçada Selvagem']},
+   descricao:'Estrutura pronta para organizar o universo da série Teen Wolf (MTV, 2011–2017): categorias do sobrenatural, tópicos de regras, personagens com fichas, locais, acontecimentos em ordem, relações e as temporadas.',
+   comoUsar:'O conteúdo foi conferido em fontes públicas (Wikipédia e wikis de fãs), mas é só um ponto de partida: edite, complete ou remova o que quiser. Os acontecimentos já vêm em ordem na Cronologia. As relações aparecem na ficha de cada personagem.',
+   categorias:[
+    {nome:'Criaturas sobrenaturais',descricao:'Seres e espécies que aparecem na série.',campos:["Origem", "Características", "Fraquezas e limites", "Quem na série"],registros:[
+      {nome:'Lobisomem (Werewolf)',descricao:'Pode ser de nascença ou mordido por um Alfa. Fica mais forte e menos controlado na lua cheia. Há Alfas, Betas e Ômegas. Um Alfa Verdadeiro, como Scott, alcança o posto sem matar outro Alfa.',valores:{"Origem": "De nascença ou por Mordida de um Alfa.", "Características": "Força e sentidos acima do normal. Há Alfas, Betas e Ômegas. O Alfa Verdadeiro sobe de posto sem matar outro Alfa.", "Fraquezas e limites": "Perde o controle com mais facilidade na lua cheia. O acônito (wolfsbane) envenena.", "Quem na série": "Scott, Derek, Peter, Isaac, Liam, entre outros."}},
+      {nome:'Kanima',descricao:'Réptil metamorfo e vingativo que precisa de um Mestre. Suas garras paralisam a vítima. Jackson se torna o Kanima na 2ª temporada.',valores:{"Origem": "Mordida de Derek rejeitada pelo corpo de Jackson.", "Características": "Réptil metamorfo de grande força e agilidade, que escala paredes. As garras têm um veneno que paralisa.", "Fraquezas e limites": "Precisa de um Mestre que o controle. Lydia consegue fazê-lo voltar à forma humana.", "Quem na série": "Jackson Whittemore. Seus Mestres foram Matt Daehler e depois Gerard Argent."}},
+      {nome:'Banshee',descricao:'Criatura que pressente mortes e pode gritar com grande poder. Lydia descobre ser uma banshee na 3ª temporada.',valores:{"Origem": "Natural, descoberta por Lydia na 3ª temporada.", "Características": "Pressente mortes e tem um grito poderoso.", "Quem na série": "Lydia Martin."}},
+      {nome:'Kitsune',descricao:'Raposa espiritual da mitologia japonesa. Kira é uma kitsune do trovão, com controle de eletricidade e talento com a katana.',valores:{"Origem": "Raposa espiritual da mitologia japonesa.", "Características": "Há tipos diferentes, como o do trovão (Thunder), que controla eletricidade. Luta com a katana.", "Quem na série": "Kira Yukimura e Noshiko Yukimura."}},
+      {nome:'Kitsune das trevas (Nogitsune)',descricao:'Também chamado de Void Kitsune, é um espírito trapaceiro que se alimenta de dor e caos. Possui Stiles na 3ª temporada.',valores:{"Origem": "Espírito de cerca de mil anos, invocado por Noshiko em 1943.", "Características": "Trapaceiro que se alimenta de dor e caos e possui hospedeiros.", "Fraquezas e limites": "Não pode ser morto de verdade: a essência foi enterrada sob o Nemeton.", "Quem na série": "Possui Stiles Stilinski na 3ª temporada."}},
+      {nome:'Oni',descricao:'Demônios japoneses invocados por Noshiko Yukimura para caçar o Nogitsune.',valores:{"Origem": "Demônios da mitologia japonesa, invocados por Noshiko.", "Características": "Caçam o Nogitsune, mas ele chega a controlá-los.", "Quem na série": "Aparecem na 3ª temporada (parte B)."}},
+      {nome:'Werecoyote',descricao:'Metamorfo em coiote. Malia Tate é a principal werecoyote da série.',valores:{"Origem": "Metamorfo em coiote.", "Características": "Malia viveu anos na forma de coiote antes de ser encontrada.", "Quem na série": "Malia Tate."}},
+      {nome:'Berserker',descricao:'Guerreiro sobrenatural usado por Kate Argent na 4ª temporada. Scott chega a ser amaldiçoado como Berserker.',valores:{"Origem": "Usado por Kate Argent na 4ª temporada.", "Características": "Scott chega a ser amaldiçoado como Berserker.", "Quem na série": "Aparece com Kate Argent."}},
+      {nome:'Quimera (Chimera)',descricao:'Criatura criada em laboratório pelos Dread Doctors, com características de mais de uma espécie. Theo Raeken é a quimera mais importante.',valores:{"Origem": "Criada em laboratório pelos Dread Doctors.", "Características": "Mistura de espécies. Theo, por exemplo, é uma quimera de lobisomem com werecoyote.", "Quem na série": "Theo Raeken, Hayden Romero e Corey, entre outros."}},
+      {nome:'Cão infernal (Hellhound)',descricao:'Criatura sobrenatural rara. Jordan Parrish é um cão infernal.',valores:{"Quem na série": "Jordan Parrish."}},
+      {nome:'Besta de Gévaudan',descricao:'Assassino lendário que os Dread Doctors tentam ressuscitar na 5ª temporada. Está ligado a Sebastien Valet.',valores:{"Origem": "Inspirada na lenda francesa do mesmo nome.", "Características": "Assassino lendário que os Dread Doctors tentam ressuscitar na 5ª temporada.", "Quem na série": "Sebastien Valet, morto por Scott e Parrish."}},
+      {nome:'Wendigo',descricao:'Criatura que aparece na 4ª temporada: Sean Walcott é um wendigo.',valores:{"Quem na série": "Sean Walcott, na 4ª temporada."}},
+      {nome:'Darach',descricao:'Druida das trevas que usa sacrifícios para ganhar poder. Jennifer Blake é a Darach da 3ª temporada.',valores:{"Características": "Druida das trevas que usa sacrifícios para ganhar poder.", "Quem na série": "Jennifer Blake, na 3ª temporada."}},
+      {nome:'Ghost Riders (Caçada Selvagem)',descricao:'Grupo ligado à Caçada Selvagem (Wild Hunt) que apaga pessoas da memória. É a ameaça da primeira metade da 6ª temporada.',valores:{"Origem": "Ligados à Caçada Selvagem (Wild Hunt).", "Características": "Apagam pessoas da memória.", "Quem na série": "Ameaça da 6ª temporada (parte A)."}},
+      {nome:'Anuk-ite',descricao:'Metamorfo antigo que se alimenta de medo. Escapa da Caçada Selvagem na segunda metade da 6ª temporada.',valores:{"Origem": "Metamorfo antigo que estava preso na Caçada Selvagem.", "Características": "Alimenta-se de medo. Também é chamado de Two Face (de duas faces).", "Fraquezas e limites": "Stiles o mata com cinza de montanha.", "Quem na série": "Ameaça da 6ª temporada (parte B)."}}]},
+    {nome:'Bandos e alcateias',descricao:'Grupos de lobisomens e aliados.',campos:["Líder", "Integrantes", "Quando aparece"],registros:[
+      {nome:'Família Hale',descricao:'Bando de lobisomens e humanos liderado por Talia Hale. Quase todos morrem no incêndio da casa dos Hale.',valores:{"Líder": "Talia Hale", "Integrantes": "Lobisomens e humanos da família, como Derek, Laura, Cora e Peter.", "Quando aparece": "Antes da 1ª temporada; é destruída no incêndio."}},
+      {nome:'Bando de Derek',descricao:'Formado por Derek depois de virar Alfa, com Isaac, Erica e Boyd. Cora se junta a ele mais tarde.',valores:{"Líder": "Derek Hale", "Integrantes": "Isaac, Erica e Boyd; Cora se junta depois.", "Quando aparece": "2ª e 3ª temporadas."}},
+      {nome:'Bando de Alfas',descricao:'Grupo de Alfas que chega a Beacon Hills na 3ª temporada para recrutar Derek. Inclui os gêmeos Ethan e Aiden.',valores:{"Integrantes": "Inclui os gêmeos Ethan e Aiden.", "Quando aparece": "3ª temporada (parte A)."}},
+      {nome:'Bando de Scott',descricao:'Scott declara que seus amigos próximos são o seu bando. Reúne, entre outros, Stiles, Lydia, Malia, Kira e Liam.',valores:{"Líder": "Scott McCall", "Integrantes": "Stiles, Lydia, Malia, Kira e Liam, entre outros.", "Quando aparece": "A partir da 3ª temporada."}},
+      {nome:'Bando de Satomi',descricao:'Bando de lobisomens ligado a Satomi, aliada de Noshiko na história de 1943. Brett Talbot, um Beta rival de Liam, vem de um bando de budistas.',valores:{"Líder": "Satomi", "Integrantes": "Brett Talbot (Beta)."}}]},
+    {nome:'Caçadores',descricao:'Famílias e códigos de quem caça criaturas sobrenaturais.',campos:["Tipo", "Quem na série"],registros:[
+      {nome:'Família Argent',descricao:'Longa linhagem de caçadores de lobisomens: Gerard, Chris, Kate, Victoria e Allison.',valores:{"Tipo": "Família de caçadores.", "Quem na série": "Gerard, Chris, Kate, Victoria e Allison."}},
+      {nome:'Código dos caçadores',descricao:'Regra de honra que proíbe matar inocentes. Chris Argent a segue; Gerard e Kate a ignoram.',valores:{"Tipo": "Código de honra.", "Quem na série": "Chris Argent o segue; Gerard e Kate o ignoram."}},
+      {nome:'Marie-Jeanne Valet',descricao:'Ancestral de Allison, interpretada pela mesma atriz na 5ª temporada.',valores:{"Tipo": "Ancestral da família Argent.", "Quem na série": "Interpretada por Crystal Reed na 5ª temporada."}}]},
+    {nome:'Símbolos e magia',descricao:'Objetos, rituais e elementos do sobrenatural.',campos:["Para que serve", "Onde aparece"],registros:[
+      {nome:'Acônito (Wolfsbane)',descricao:'Planta que envenena e enfraquece lobisomens.',valores:{"Para que serve": "Envenena e enfraquece lobisomens.", "Onde aparece": "Derek é envenenado na 1ª temporada (episódio \"Magic Bullet\")."}},
+      {nome:'Cinza de montanha (Mountain Ash)',descricao:'Usada para criar barreiras contra criaturas sobrenaturais. Stiles a usa para matar o Anuk-ite.',valores:{"Para que serve": "Barreira contra criaturas sobrenaturais.", "Onde aparece": "Stiles a usa para matar o Anuk-ite na 6ª temporada."}},
+      {nome:'Âncora',descricao:'Algo ou alguém que ajuda o lobisomem a manter o controle durante a transformação. Allison foi a âncora de Scott.',valores:{"Para que serve": "Ajuda o lobisomem a controlar a transformação.", "Onde aparece": "3ª temporada (episódio \"Anchors\"); Allison era a âncora de Scott."}},
+      {nome:'Rugido do Alfa',descricao:'Poder de um Alfa. Scott o usa para ajudar Malia a voltar à forma humana e para libertar Stiles do Nogitsune.',valores:{"Para que serve": "Poder de um Alfa, que pode devolver alguém à forma humana.", "Onde aparece": "3ª temporada, com Malia e Stiles."}},
+      {nome:'Sacrifício druida',descricao:'Ritual da 3ª temporada em que Scott, Stiles e Allison se sacrificam temporariamente para salvar os pais. Deixa uma escuridão no coração de cada um.',valores:{"Para que serve": "Ritual da Darach, que Scott, Stiles e Allison usam para salvar os pais.", "Onde aparece": "3ª temporada (episódios \"Alpha Pact\" e \"Lunar Ellipse\")."}},
+      {nome:'Fogo de raposa (FoxFire)',descricao:'Poder dos kitsune, usado por Kira e Noshiko, por exemplo, para reparar uma katana quebrada.',valores:{"Para que serve": "Poder dos kitsune, usado, por exemplo, para consertar uma katana quebrada.", "Onde aparece": "3ª temporada (episódio \"The Fox and the Wolf\")."}},
+      {nome:'Katana de Kira',descricao:'Espada que funciona como passagem para o espírito da raposa. Kira a recebe de Noshiko.',valores:{"Para que serve": "Funciona como passagem para o espírito da raposa.", "Onde aparece": "Kira a recebe de Noshiko na 3ª temporada."}}]},
+    {nome:'Temporadas e episódios',descricao:'Visão geral da série. Total: 6 temporadas e 100 episódios, exibidos de 5/6/2011 a 24/9/2017.',campos:["Episódios", "Exibição", "Principal ameaça"],registros:[
+      {nome:'Temporada 1',descricao:'Scott é mordido, Derek volta a Beacon Hills e o Alfa misterioso é revelado como Peter Hale.',valores:{"Episódios": "12", "Exibição": "5/6/2011 a 15/8/2011", "Principal ameaça": "Peter Hale, o Alfa misterioso."}},
+      {nome:'Temporada 2',descricao:'O Kanima e seu Mestre, o bando de Derek e a chegada de Gerard Argent.',valores:{"Episódios": "12", "Exibição": "3/6/2012 a 13/8/2012", "Principal ameaça": "O Kanima e Gerard Argent."}},
+      {nome:'Temporada 3',descricao:'Bando de Alfas, a Darach, o Nogitsune e os Oni.',valores:{"Episódios": "24 (12 + 12)", "Exibição": "3/6/2013 a 19/8/2013 e 6/1/2014 a 24/3/2014", "Principal ameaça": "Bando de Alfas, a Darach e o Nogitsune."}},
+      {nome:'Temporada 4',descricao:'Liam é mordido e entra no bando, Kate volta com um Berserker e a Dead Pool ameaça o grupo.',valores:{"Episódios": "12", "Exibição": "23/6/2014 a 8/9/2014", "Principal ameaça": "O Benefactor e a Dead Pool; Kate com um Berserker."}},
+      {nome:'Temporada 5',descricao:'Os Dread Doctors, as quimeras, Theo e a Besta de Gévaudan.',valores:{"Episódios": "20 (10 + 10)", "Exibição": "29/6/2015 a 24/8/2015 e 5/1/2016 a 8/3/2016", "Principal ameaça": "Os Dread Doctors, Theo e a Besta de Gévaudan."}},
+      {nome:'Temporada 6',descricao:'A Caçada Selvagem, o desaparecimento de Stiles e o Anuk-ite.',valores:{"Episódios": "20 (10 + 10)", "Exibição": "15/11/2016 a 31/1/2017 e 30/7/2017 a 24/9/2017", "Principal ameaça": "A Caçada Selvagem, o Anuk-ite e o plano de Gerard."}},
+      {nome:'Teen Wolf: The Movie',descricao:'Filme que continua a série. Dylan O’Brien, Arden Cho e Cody Christian ficaram de fora do elenco anunciado.',valores:{"Episódios": "Longa-metragem", "Exibição": "26/1/2023, no Paramount+"}}]}],
+   topicosInformacoesGerais:[
+    {nome:'Regras do sobrenatural',descricao:'Na lua cheia os lobisomens perdem o controle com mais facilidade. Acônito envenena, cinza de montanha forma barreiras e uma âncora ajuda a manter o controle. Um Alfa Verdadeiro sobe de posto pela força de vontade, sem matar outro Alfa.'},
+    {nome:'Tradições e códigos',descricao:'Os caçadores seguem um código que proíbe matar inocentes. Lobisomens se organizam em bandos liderados por um Alfa, com Betas e Ômegas.'}],
+   personagens:[
+    {nome:'Scott McCall',funcao:'Protagonista; Alfa Verdadeiro e líder do bando',origem:'Lobisomem; filho de Melissa McCall',descricao:'Aluno de Beacon Hills mordido por Peter Hale na estreia. Torna-se um Alfa Verdadeiro, que alcançou o posto sem matar outro Alfa, e lidera o próprio bando. Trabalha meio período na clínica veterinária de Deaton.'},
+    {nome:'Stiles Stilinski',funcao:'Melhor amigo de Scott; o investigador do grupo',origem:'Humano; filho do xerife Noah Stilinski',descricao:'Nome completo: Mieczysław Stilinski. Sarcástico, inteligente e leal, descobre antes de todos que Scott está virando lobisomem. Na 3ª temporada é possuído pelo Nogitsune.'},
+    {nome:'Lydia Martin',funcao:'Gênio do grupo',origem:'Banshee',descricao:'Aluna mais popular do colégio e extremamente inteligente. Descobre ser uma banshee na 3ª temporada, o que explica as visões e a capacidade de pressentir mortes.'},
+    {nome:'Allison Argent',funcao:'Caçadora; primeiro amor de Scott',origem:'Humana; família Argent de caçadores',descricao:'Chega a Beacon Hills na estreia e começa a namorar Scott. Excelente com arco e flecha, descende de uma longa linhagem de caçadores de lobisomens. Morre na 3ª temporada, ferida por um Oni.'},
+    {nome:'Derek Hale',funcao:'Ex-Alfa; mentor relutante de Scott',origem:'Lobisomem de nascença; família Hale',descricao:'Sobrevivente do incêndio que matou grande parte da família Hale. Volta a Beacon Hills seis anos depois, torna-se Alfa no fim da 1ª temporada e forma um bando com Isaac, Erica e Boyd.'},
+    {nome:'Peter Hale',funcao:'Tio de Derek; antagonista da 1ª temporada',origem:'Lobisomem; família Hale',descricao:'Ficou em coma depois do incêndio. Mordeu Scott e matou a sobrinha Laura para virar Alfa. É morto por Derek no fim da 1ª temporada, mas volta nas temporadas seguintes. É o pai biológico de Malia.'},
+    {nome:'Jackson Whittemore',funcao:'Capitão do lacrosse; ex-Kanima',origem:'Humano, depois Kanima e lobisomem; adotado',descricao:'Rival de Scott no começo. Mordido por Derek, transforma-se no Kanima na 2ª temporada e depois em lobisomem. Muda-se para Londres entre a 2ª e a 3ª temporadas.'},
+    {nome:'Isaac Lahey',funcao:'Beta de Derek; amigo de Scott',origem:'Lobisomem',descricao:'Um dos três alunos mordidos por Derek na 2ª temporada. Torna-se amigo próximo de Scott e, na 3ª temporada, se envolve com Allison.'},
+    {nome:'Erica Reyes',funcao:'Beta de Derek',origem:'Lobisomem',descricao:'Mordida por Derek na 2ª temporada. É encontrada morta na 3ª, depois de ser mantida refém pelo Bando de Alfas.'},
+    {nome:'Vernon Boyd',funcao:'Beta de Derek',origem:'Lobisomem',descricao:'Mordido por Derek na 2ª temporada. Morre na 3ª temporada, em meio aos conflitos com o Bando de Alfas.'},
+    {nome:'Cora Hale',funcao:'Irmã mais nova de Derek',origem:'Lobisomem; família Hale',descricao:'Sobreviveu ao incêndio da casa dos Hale e reaparece na 3ª temporada.'},
+    {nome:'Laura Hale',funcao:'Irmã mais velha de Derek',origem:'Lobisomem; família Hale',descricao:'Deixou Beacon Hills com Derek depois do incêndio. Foi morta por Peter, que assim se tornou Alfa.'},
+    {nome:'Talia Hale',funcao:'Alfa da família Hale',origem:'Lobisomem; mãe de Derek',descricao:'Era a Alfa do bando da família Hale, formado por lobisomens e humanos. Morreu no incêndio da casa dos Hale.'},
+    {nome:'Kate Argent',funcao:'Caçadora; tia de Allison',origem:'Humana; família Argent',descricao:'Seduziu Derek para obter informações dos Hale e incendiou a casa da família. Peter a mata no fim da 1ª temporada; ela volta na 4ª temporada, ao lado de um Berserker.'},
+    {nome:'Chris Argent',funcao:'Caçador veterano; pai de Allison',origem:'Humano; família Argent',descricao:'Segue o Código dos caçadores e não acredita em matar inocentes. Passa de adversário a aliado de Scott e vira protetor do bando.'},
+    {nome:'Victoria Argent',funcao:'Mãe de Allison',origem:'Humana; família Argent',descricao:'Mãe de Allison e esposa de Chris. Morre na 2ª temporada depois de ser mordida, escolhendo seguir o Código dos caçadores.'},
+    {nome:'Gerard Argent',funcao:'Líder dos caçadores; antagonista',origem:'Humano; família Argent',descricao:'Avô de Allison. Na 2ª temporada manipula a neta e tenta obter a Mordida de um Alfa para curar o próprio câncer. Reaparece mais tarde com um plano para eliminar os seres sobrenaturais.'},
+    {nome:'Melissa McCall',funcao:'Mãe de Scott; enfermeira',origem:'Humana; nascida Melissa Delgado',descricao:'Enfermeira do Hospital Memorial de Beacon Hills, divorciada. Descobre a verdade sobre Scott na 2ª temporada e passa a ajudar o bando.'},
+    {nome:'Rafael McCall',funcao:'Pai de Scott',origem:'Humano',descricao:'Deixou a família quando Scott era criança. Volta a Beacon Hills na 3ª temporada, o que incomoda Scott e Melissa.'},
+    {nome:'Noah Stilinski',funcao:'Xerife de Beacon Hills; pai de Stiles',origem:'Humano',descricao:'Chamado de xerife Stilinski ao longo da série. Entra no mundo sobrenatural na 3ª temporada, quando é sequestrado pela Darach, e passa a usar a polícia para ajudar o grupo.'},
+    {nome:'Alan Deaton',funcao:'Veterinário; conselheiro de Scott',origem:'Humano',descricao:'Dono da clínica veterinária de Beacon Hills, onde Scott trabalha. Figura paterna para Scott e fonte de conhecimento sobre o sobrenatural.'},
+    {nome:'Malia Tate',funcao:'Werecoyote do bando de Scott',origem:'Werecoyote; filha biológica de Peter Hale',descricao:'Presumida morta por oito anos depois de um acidente de carro, viveu como coiote. É encontrada na 3ª temporada, volta a viver como humana e entra no bando de Scott.'},
+    {nome:'Henry Tate',funcao:'Pai adotivo de Malia',origem:'Humano',descricao:'Reencontra a filha, dada como morta, na 3ª temporada.'},
+    {nome:'Kira Yukimura',funcao:'Kitsune do trovão',origem:'Kitsune; filha de Ken e Noshiko Yukimura',descricao:'Chega a Beacon Hills na 3ª temporada. Controla eletricidade e luta com uma katana. Namora Scott e entra no bando.'},
+    {nome:'Noshiko Yukimura',funcao:'Mãe de Kira',origem:'Kitsune com cerca de 900 anos',descricao:'Invocou o Nogitsune em 1943 e depois o enfrentou. Chama os Oni a Beacon Hills para eliminá-lo.'},
+    {nome:'Ken Yukimura',funcao:'Pai de Kira; professor de História',origem:'Humano',descricao:'Pai de Kira e novo professor de História do colégio na 3ª temporada.'},
+    {nome:'Liam Dunbar',funcao:'Primeiro Beta de Scott',origem:'Lobisomem',descricao:'Calouro com problemas de raiva, é mordido por Scott na 4ª temporada para escapar da morte. Torna-se o primeiro Beta de Scott e aprende a se controlar.'},
+    {nome:'Mason Hewitt',funcao:'Melhor amigo de Liam',origem:'Humano',descricao:'Melhor amigo de Liam e aliado do bando.'},
+    {nome:'Theo Raeken',funcao:'Quimera; antagonista da 5ª temporada',origem:'Quimera criada pelos Dread Doctors',descricao:'Amigo de infância de Scott. Volta a Beacon Hills na 5ª temporada fingindo ser lobisomem, mas é uma quimera a serviço dos Dread Doctors. É banido no fim da temporada e se torna aliado na 6ª.'},
+    {nome:'Jordan Parrish',funcao:'Deputado de Beacon Hills',origem:'Cão infernal (Hellhound)',descricao:'Deputado do xerife Stilinski e aliado do bando. Ajuda Scott a matar a Besta de Gévaudan.'},
+    {nome:'Jennifer Blake',funcao:'Professora de inglês; a Darach',origem:'Darach (druida das trevas)',descricao:'Professora de inglês de Beacon Hills. Na 3ª temporada realiza sacrifícios humanos como Darach e sequestra os pais do grupo.'},
+    {nome:'Matt Daehler',funcao:'Mestre do Kanima',origem:'Humano',descricao:'Aluno traumatizado que se torna o Mestre de Jackson e usa o Kanima para se vingar. É morto por Gerard na 2ª temporada.'},
+    {nome:'Ethan',funcao:'Gêmeo do Bando de Alfas',origem:'Lobisomem',descricao:'Gêmeo de Aiden e integrante do Bando de Alfas. Na 6ª temporada, é namorado de Jackson.'},
+    {nome:'Aiden',funcao:'Gêmeo do Bando de Alfas',origem:'Lobisomem',descricao:'Irmão gêmeo de Ethan. Na 3ª temporada se aproxima de Lydia por ordem do Bando de Alfas.'},
+    {nome:'Bobby Finstock',funcao:'Treinador de lacrosse',origem:'Humano',descricao:'Treinador do time de lacrosse do colégio.'},
+    {nome:'Nogitsune',funcao:'Espírito que possui Stiles',origem:'Kitsune das trevas (Void Kitsune)',descricao:'Espírito trapaceiro de cerca de mil anos que se alimenta de dor e caos. Possui Stiles na 3ª temporada, depois que o sacrifício druida deixa uma porta aberta na mente dele.'}],
+   locais:[
+    {nome:'Beacon Hills',tipo:'Cidade',regiao:'Califórnia',descricao:'Cidade fictícia da Califórnia onde se passa a série, um ponto de atração de atividade sobrenatural.'},
+    {nome:'Casa dos Hale',tipo:'Casa',regiao:'Beacon Hills',descricao:'Casa da família Hale, destruída no incêndio provocado por Kate Argent.'},
+    {nome:'Nemeton',tipo:'Árvore mágica',regiao:'Arredores de Beacon Hills',descricao:'Árvore mágica ligada aos rituais druidas. O Nogitsune foi enterrado sob ela e os pais dos jovens são mantidos lá pela Darach.'},
+    {nome:'Colégio de Beacon Hills',tipo:'Escola',regiao:'Beacon Hills',descricao:'Colégio onde estudam Scott e o grupo.'},
+    {nome:'Hospital Memorial de Beacon Hills',tipo:'Hospital',regiao:'Beacon Hills',descricao:'Hospital onde Melissa McCall trabalha como enfermeira.'},
+    {nome:'Clínica Veterinária de Beacon Hills',tipo:'Clínica',regiao:'Beacon Hills',descricao:'Clínica do doutor Deaton, onde Scott trabalha meio período.'},
+    {nome:'Eichen House',tipo:'Instituição',regiao:'Beacon Hills',descricao:'Instituição psiquiátrica ligada a vários eventos da série, entre eles a história do Nogitsune.'},
+    {nome:'Camp Oak Creek',tipo:'Acampamento',regiao:'',descricao:'Acampamento associado à história de Noshiko e do Nogitsune em 1943.'},
+    {nome:'La Iglesia',tipo:'Igreja',regiao:'',descricao:'Local para onde Kate leva Scott e Kira na 4ª temporada.'},
+    {nome:'Delegacia do xerife',tipo:'Delegacia',regiao:'Beacon Hills',descricao:'Delegacia comandada pelo xerife Stilinski.'},
+    {nome:'Reserva de Beacon Hills',tipo:'Mata',regiao:'Beacon Hills',descricao:'Mata ao redor da cidade, frequentemente citada como "the Preserve".'},
+    {nome:'Casa dos McCall',tipo:'Casa',regiao:'Beacon Hills',descricao:'Casa de Scott e Melissa, protegida com rodapés de madeira que funcionam como barreira contra intrusos sobrenaturais.'},
+    {nome:'Casa dos Stilinski',tipo:'Casa',regiao:'Beacon Hills',descricao:'Casa de Stiles e do xerife Stilinski.'},
+    {nome:'Casa de Lydia no lago',tipo:'Casa de lago',regiao:'',descricao:'Local de reuniões do bando, como o encontro em que Liam descobre o mundo sobrenatural.'},
+    {nome:'Teatro de operações dos Dread Doctors',tipo:'Laboratório',regiao:'',descricao:'Base dos Dread Doctors, depois ocupada por Theo.'}],
+   acontecimentos:[
+    {nome:'Noshiko invoca o Nogitsune',data:'1943',local:'Camp Oak Creek e Eichen House',descricao:'Noshiko Yukimura invoca o Nogitsune, que possui o corpo do cabo Rhys. Ela o derrota com a ajuda de Satomi e o enterra sob o Nemeton.'},
+    {nome:'Morte de Paige',data:'Quando Derek tinha 15 anos',local:'',descricao:'Paige recebe a Mordida e a rejeita. Derek a ajuda a morrer, e por isso seus olhos passam de amarelos a azuis.'},
+    {nome:'Incêndio na casa dos Hale',data:'Cerca de 6 anos antes da 1ª temporada',local:'Casa dos Hale',descricao:'Kate Argent incendeia a casa dos Hale e mata a maior parte da família. Peter fica em coma, e Derek e Laura deixam Beacon Hills.'},
+    {nome:'Scott é mordido',data:'1ª temporada (episódio "Wolf Moon")',local:'Reserva de Beacon Hills',descricao:'Na estreia, Scott é mordido por um lobisomem Alfa na mata, que depois se revela ser Peter Hale.'},
+    {nome:'Derek derrota Peter e vira Alfa',data:'Final da 1ª temporada',local:'',descricao:'Peter mata Kate como vingança pelo incêndio. Derek mata Peter para impedi-lo de continuar e se torna o novo Alfa.'},
+    {nome:'Derek morde Isaac, Erica e Boyd',data:'2ª temporada',local:'',descricao:'Derek forma seu bando oferecendo a Mordida a três alunos e dando a eles uma espécie de família.'},
+    {nome:'Jackson se torna o Kanima',data:'2ª temporada',local:'',descricao:'A Mordida de Derek é rejeitada pelo corpo de Jackson, que se transforma no Kanima e passa a obedecer a um Mestre.'},
+    {nome:'Morte de Victoria Argent',data:'2ª temporada',local:'',descricao:'Depois de ser mordida, Victoria escolhe seguir o Código dos caçadores. A perda abala Allison e a deixa vulnerável à manipulação de Gerard.'},
+    {nome:'Derrota de Gerard e cura de Jackson',data:'Final da 2ª temporada (episódio "Master Plan")',local:'',descricao:'O plano de Gerard de obter a Mordida é frustrado. Lydia ajuda Jackson a voltar à forma humana, e ele se torna lobisomem.'},
+    {nome:'Chegada do Bando de Alfas',data:'3ª temporada (parte A)',local:'Beacon Hills',descricao:'Um bando de Alfas chega a Beacon Hills para recrutar Derek e mantém Erica e Boyd como reféns.'},
+    {nome:'Os sacrifícios da Darach',data:'3ª temporada (parte A)',local:'Nemeton',descricao:'Jennifer Blake realiza sacrifícios humanos. Scott, Stiles e Allison se sacrificam temporariamente para salvar os pais, e Scott se torna um Alfa Verdadeiro em "Lunar Ellipse".'},
+    {nome:'Nogitsune possui Stiles',data:'3ª temporada (parte B)',local:'',descricao:'O sacrifício druida deixa uma porta aberta na mente de Stiles, e o Nogitsune assume o controle e provoca o caos em Beacon Hills.'},
+    {nome:'Morte de Allison',data:'3ª temporada (parte B)',local:'',descricao:'Allison é ferida fatalmente por um Oni no episódio "Insatiable".'},
+    {nome:'Derrota do Nogitsune',data:'Final da 3ª temporada',local:'Colégio de Beacon Hills',descricao:'Kira atravessa o corpo do Nogitsune com a katana, depois que Scott o morde.'},
+    {nome:'Liam é mordido por Scott',data:'4ª temporada (episódio "Muted")',local:'Hospital Memorial de Beacon Hills',descricao:'Para salvar Liam de uma queda, Scott o morde e cria seu primeiro Beta.'},
+    {nome:'O Benefactor e a Dead Pool',data:'4ª temporada',local:'',descricao:'Uma lista de alvos sobrenaturais, a Dead Pool, ameaça o bando, enquanto Kate volta ao lado de um Berserker.'},
+    {nome:'Os Dread Doctors e as quimeras',data:'5ª temporada',local:'Teatro de operações dos Dread Doctors',descricao:'Os Dread Doctors criam quimeras e tentam ressuscitar a Besta de Gévaudan. Theo Raeken chega a Beacon Hills.'},
+    {nome:'Morte da Besta de Gévaudan',data:'5ª temporada',local:'',descricao:'Scott e Parrish matam Sebastien Valet e impedem a ressurreição da Besta.'},
+    {nome:'Theo é banido',data:'Final da 5ª temporada',local:'',descricao:'Kira bane Theo para um lugar entre os mundos.'},
+    {nome:'A Caçada Selvagem e o desaparecimento de Stiles',data:'6ª temporada (parte A)',local:'',descricao:'Os Ghost Riders, da Caçada Selvagem, apagam pessoas da memória, e Stiles desaparece.'},
+    {nome:'O Anuk-ite e o plano de Gerard',data:'6ª temporada (parte B)',local:'Colégio de Beacon Hills',descricao:'O Anuk-ite escapa da Caçada Selvagem e espalha medo, enquanto Gerard planeja eliminar todos os seres sobrenaturais. Stiles mata o Anuk-ite com cinza de montanha.'}],
+   relacoes:[
+    {de:'Scott McCall',para:'Stiles Stilinski',tipo:'Melhores amigos',descricao:'Amigos de infância que se consideram irmãos.'},
+    {de:'Scott McCall',para:'Allison Argent',tipo:'Ex-namorados',descricao:'Namoram na 1ª e na 2ª temporadas, apesar da oposição dos pais de Allison.'},
+    {de:'Scott McCall',para:'Kira Yukimura',tipo:'Namorados',descricao:'Começam a namorar a partir da 3ª temporada.'},
+    {de:'Melissa McCall',para:'Scott McCall',tipo:'Mãe de',descricao:''},
+    {de:'Rafael McCall',para:'Scott McCall',tipo:'Pai de',descricao:'Abandonou a família quando Scott era criança.'},
+    {de:'Alan Deaton',para:'Scott McCall',tipo:'Mentor de',descricao:'Patrão e figura paterna.'},
+    {de:'Peter Hale',para:'Scott McCall',tipo:'Mordeu',descricao:'A Mordida de Peter transforma Scott em lobisomem na estreia.'},
+    {de:'Scott McCall',para:'Liam Dunbar',tipo:'Mordeu',descricao:'Liam se torna o primeiro Beta de Scott.'},
+    {de:'Scott McCall',para:'Isaac Lahey',tipo:'Amigos',descricao:'Isaac se torna um amigo próximo de Scott a partir da 2ª temporada.'},
+    {de:'Theo Raeken',para:'Scott McCall',tipo:'Amigo de infância de',descricao:'Voltou a Beacon Hills na 5ª temporada.'},
+    {de:'Noah Stilinski',para:'Stiles Stilinski',tipo:'Pai de',descricao:''},
+    {de:'Stiles Stilinski',para:'Lydia Martin',tipo:'Apaixonado por',descricao:'Gosta de Lydia desde a 3ª série.'},
+    {de:'Stiles Stilinski',para:'Malia Tate',tipo:'Namorados',descricao:'Começam a namorar na 3ª temporada.'},
+    {de:'Nogitsune',para:'Stiles Stilinski',tipo:'Possuiu',descricao:'Possessão da 3ª temporada.'},
+    {de:'Lydia Martin',para:'Jackson Whittemore',tipo:'Ex-namorados',descricao:'Namoram na 1ª e na 2ª temporadas.'},
+    {de:'Lydia Martin',para:'Allison Argent',tipo:'Melhores amigas',descricao:''},
+    {de:'Lydia Martin',para:'Aiden',tipo:'Relacionamento',descricao:'Relacionamento da 3ª temporada.'},
+    {de:'Allison Argent',para:'Isaac Lahey',tipo:'Namorados',descricao:'Relacionamento da 3ª temporada.'},
+    {de:'Chris Argent',para:'Allison Argent',tipo:'Pai de',descricao:''},
+    {de:'Victoria Argent',para:'Allison Argent',tipo:'Mãe de',descricao:''},
+    {de:'Kate Argent',para:'Allison Argent',tipo:'Tia de',descricao:'Apresenta o mundo dos caçadores a Allison.'},
+    {de:'Gerard Argent',para:'Allison Argent',tipo:'Avô de',descricao:''},
+    {de:'Talia Hale',para:'Derek Hale',tipo:'Mãe de',descricao:''},
+    {de:'Peter Hale',para:'Derek Hale',tipo:'Tio de',descricao:'Derek mata Peter no fim da 1ª temporada.'},
+    {de:'Laura Hale',para:'Derek Hale',tipo:'Irmã de',descricao:''},
+    {de:'Cora Hale',para:'Derek Hale',tipo:'Irmã de',descricao:''},
+    {de:'Peter Hale',para:'Laura Hale',tipo:'Matou',descricao:'Peter mata a sobrinha para se tornar Alfa.'},
+    {de:'Peter Hale',para:'Kate Argent',tipo:'Matou',descricao:'Vingança pelo incêndio.'},
+    {de:'Kate Argent',para:'Casa dos Hale',tipo:'Incendiou',descricao:''},
+    {de:'Derek Hale',para:'Isaac Lahey',tipo:'Mordeu',descricao:''},
+    {de:'Derek Hale',para:'Erica Reyes',tipo:'Mordeu',descricao:''},
+    {de:'Derek Hale',para:'Vernon Boyd',tipo:'Mordeu',descricao:''},
+    {de:'Derek Hale',para:'Jackson Whittemore',tipo:'Mordeu',descricao:'A Mordida é rejeitada, e Jackson se torna o Kanima.'},
+    {de:'Matt Daehler',para:'Jackson Whittemore',tipo:'Mestre de',descricao:'Controla o Kanima na 2ª temporada.'},
+    {de:'Peter Hale',para:'Malia Tate',tipo:'Pai de',descricao:'Revelado na 3ª temporada.'},
+    {de:'Henry Tate',para:'Malia Tate',tipo:'Pai adotivo de',descricao:''},
+    {de:'Noshiko Yukimura',para:'Kira Yukimura',tipo:'Mãe de',descricao:''},
+    {de:'Ken Yukimura',para:'Kira Yukimura',tipo:'Pai de',descricao:''},
+    {de:'Noshiko Yukimura',para:'Nogitsune',tipo:'Invocou',descricao:'Em 1943.'},
+    {de:'Nogitsune',para:'Nemeton',tipo:'Enterrado sob',descricao:'Ficou preso sob a árvore por cerca de 70 anos.'},
+    {de:'Liam Dunbar',para:'Mason Hewitt',tipo:'Melhores amigos',descricao:''},
+    {de:'Kira Yukimura',para:'Theo Raeken',tipo:'Baniu',descricao:'No fim da 5ª temporada.'},
+    {de:'Ethan',para:'Aiden',tipo:'Irmãos gêmeos',descricao:''},
+    {de:'Melissa McCall',para:'Noah Stilinski',tipo:'Amigos',descricao:'Amigos próximos.'}]},
   {app:PACOTE_APP,versao:1,id:'acontecimento-historico',tipo:'pesquisa',nome:'Acontecimento histórico',
    descricao:'Reúna o que você descobre sobre um fato da história: o que aconteceu, quem participou, de onde veio cada informação e o que falta investigar.',
    comoUsar:'Comece pela linha do tempo e registre as fontes à medida que pesquisa.',
@@ -2502,8 +2744,12 @@ const PACOTES_EXEMPLO=[
    areas:[{nome:'Conceitos e definições',descricao:'O que cada termo significa',tipo:'informacoes'},{nome:'Evidências e dados',descricao:'O que sustenta cada ideia',tipo:'informacoes'},{nome:'Fontes e artigos',tipo:'referencias'},{nome:'Perguntas em aberto',tipo:'duvidas'},{nome:'Anotações',tipo:'livre'}]}
 ];
 const MODELO_PACOTE_UNIVERSO={app:PACOTE_APP,versao:1,id:'meu-universo',tipo:'universo',nome:'Nome do pacote',descricao:'Para que serve este pacote.',comoUsar:'Como começar a usar (opcional).',
-  categorias:['Uma categoria',{nome:'Outra categoria',descricao:'Descrição opcional'}],topicosInformacoesGerais:['Um tópico de informações gerais'],
-  personagens:['Nome de um personagem'],locais:['Nome de um local'],acontecimentos:['Nome de um acontecimento']};
+  categorias:['Uma categoria',{nome:'Outra categoria',descricao:'Descrição opcional',campos:['Um campo personalizado','Outro campo'],registros:[{nome:'Um registro dentro da categoria',descricao:'Texto do registro',valores:{'Um campo personalizado':'Valor deste campo neste registro'}}]}],
+  topicosInformacoesGerais:['Um tópico de informações gerais',{nome:'Outro tópico',descricao:'Texto inicial do tópico'}],
+  personagens:['Nome de um personagem',{nome:'Outro personagem',descricao:'Apresentação',funcao:'Papel / função',idade:'Idade',origem:'Origem'}],
+  locais:[{nome:'Nome de um local',descricao:'Descrição',tipo:'Tipo de local',regiao:'Localização / região'}],
+  acontecimentos:[{nome:'Nome de um acontecimento',descricao:'Descrição',data:'Data ou período (os acontecimentos aparecem na Cronologia)',local:'Local relacionado'}],
+  relacoes:[{de:'Nome de um personagem',para:'Nome de um local',tipo:'Tipo da relação',descricao:'Descrição opcional'}]};
 const MODELO_PACOTE_PESQUISA={app:PACOTE_APP,versao:1,id:'minha-pesquisa',tipo:'pesquisa',nome:'Nome do pacote',descricao:'Para que serve este pacote.',comoUsar:'Como começar a usar (opcional).',exemplos:['Um exemplo de uso (opcional)'],
   areas:[{nome:'Informações',descricao:'Descrição opcional',tipo:'informacoes'},{nome:'Fontes',tipo:'referencias'},{nome:'Dúvidas',tipo:'duvidas'},{nome:'Anotações',tipo:'livre'}]};
 async function copiarModeloPacote(modelo){
@@ -2539,9 +2785,12 @@ function montarPacotes(){
   exemplos.append(el('h2','','Pacotes de exemplo'),el('p','','Já vêm prontos. Adicione com um toque e use como estão ou como base para os seus.'));
   const listaEx=el('div','pacote-lista');
   PACOTES_EXEMPLO.forEach(ex=>{
-    const item=el('div','pacote-item'),ja=pacotes.some(p=>p.id===ex.id);
+    const item=el('div','pacote-item'),guardado=pacotes.find(p=>p.id===ex.id),conf=validarPacotePopy(JSON.stringify(ex));
+    const semData=pc=>{const {adicionadoEm,...resto}=pc;return resto;};
+    const ja=!!guardado&&!!conf.pacote&&JSON.stringify(semData(guardado))===JSON.stringify(conf.pacote);     // já está na versão atual
     item.append(el('strong','',ex.nome),el('small','',rotuloTipoPacote(ex)+' · '+ex.descricao));
-    const b=botao('btn-secundario',ja?'Adicionado':'Adicionar',async()=>{const v=validarPacotePopy(JSON.stringify(ex));if(v.erro){mensagemPacotesPopy={texto:v.erro,erro:true};}else{await adicionarPacote(v.pacote);mensagemPacotesPopy={texto:'Pacote "'+ex.nome+'" adicionado. Ele já aparece em "+" > Criação estruturada.',erro:false};}mostrarEspaco('pacotes');});
+    if(guardado&&!ja)item.appendChild(el('small','','Há uma versão mais completa deste pacote. Atualizar não muda o que você já criou com ele.'));
+    const b=botao('btn-secundario',!guardado?'Adicionar':(ja?'Adicionado':'Atualizar para a versão nova'),async()=>{if(conf.erro){mensagemPacotesPopy={texto:conf.erro,erro:true};}else{await adicionarPacote(conf.pacote);mensagemPacotesPopy={texto:'Pacote "'+ex.nome+'" '+(guardado?'atualizado':'adicionado')+'. Ele já aparece em "+" > Criação estruturada.',erro:false};}mostrarEspaco('pacotes');});
     b.disabled=ja;b.style.marginTop='8px';item.appendChild(b);listaEx.appendChild(item);
   });
   exemplos.appendChild(listaEx);conteudoEspaco.appendChild(exemplos);
